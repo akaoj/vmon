@@ -12,10 +12,11 @@ BEGIN
     (
         'OK'                =>  { 'status' => 100, 'aliases' => [ qw{ SUCCESS } ] },
         'NOTHING_CHANGED'   =>  { 'status' => 101, 'aliases' => [ qw{ NOTHING_TO_DO } ] },
-        'INTERNAL_ERROR'    =>  { 'status' => 200, 'aliases' => [ ] },
+        'INTERNAL_ERROR'    =>  { 'status' => 200, 'aliases' => [ qw{ SERVER_ERROR } ] },
         'FORBIDDEN'         =>  { 'status' => 300, 'aliases' => [ qw{ NOT_ALLOWED } ] },
-        'TIMEOUT'           =>  { 'status' => 400, 'aliases' => [ ] },
-        'INVALID_PARAMETER' =>  { 'status' => 500, 'aliases' => [ qw{ INVALID_PARAMETERS INVALID_ARGUMENT INVALID_ARGUMENTS } ] },
+        'INVALID_PARAMETER' =>  { 'status' => 400, 'aliases' => [ qw{ INVALID_PARAMETERS INVALID_ARGUMENT INVALID_ARGUMENTS } ] },
+        'MISSING_PARAMETER' =>  { 'status' => 401, 'aliases' => [ qw{ MISSING _PARAMETERS MISSING_ARGUMENT MISSING_ARGUMENTS } ] },
+        'TIMEOUT'           =>  { 'status' => 500, 'aliases' => [ ] },
         'UNKNOWN_ERROR'     =>  { 'status' => 999, 'aliases' => [ qw{ UNKNOWN } ] },
     );
 
