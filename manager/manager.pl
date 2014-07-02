@@ -54,34 +54,18 @@ my $VMON_RUN_LOOP_DELAY = 10;
 # We first daemonize this script
 vmon::common::print( 'Daemonizing the manager...' );
 
-my $pid = fork( );
-not defined $pid and vmon::common::die( "Can't daemonize because of: $!" );
+my $pid = vmon::common::forkAndRedirectFilehandles( { 'stdout' => $VMON_LOG_FILE } );
+
+not defined $pid and vmon::common::die( "Can't daemonize, see logs at '$VMON_LOG_FILE' for more informations" );
 
 # We stop the father
 if( $pid != 0 )
 {
-    vmon::common::print( "Process forked with pid $pid, ending..." );
+    vmon::common::print( "Child forked with pid '$pid', ending father..." );
     exit( 0 );
 }
 
-# Now we are forked, we close all STDIN/OUT
-close( STDIN );
-close( STDOUT );
-
-# We keep STDERR open so we can stil die( ) and be noticed by the caller
-
-# We open STDOUT to the logfile
-not open( STDOUT, '>>', $VMON_LOG_FILE ) and vmon::common::die( "Can't open the logfile '$VMON_LOG_FILE' because of: $!" );
-
-# We now can close STDERR and reopen it to the logfile
-close( STDERR );
-if( not open( STDERR, '>>', $VMON_LOG_FILE ) )
-{
-    vmon::common::print( "Can't redirect STDERR to logfile '$VMON_LOG_FILE' because of: $!" );
-    exit( 1 );
-}
-
-vmon::common::print( 'Process forked, loading the probes configs...' );
+vmon::common::print( 'We are the child, loading the probes configs...' );
 
 
 
@@ -150,11 +134,7 @@ while( 1 )
             $probesStats->{ $probe } = { 'lastRun' => 0 };
         }
 
-        vmon::common::print( "Processing probe '$probe'..." );
-
         _processProbe( { 'probe' => $probe, 'config' => $probesConfiguration->{ $probe }, 'stats' => $probesStats->{ $probe } } );
-
-        vmon::common::print( "Probe '$probe' processed" );
     }
 
     vmon::common::print( "All probes processed, sleeping for $VMON_RUN_LOOP_DELAY seconds..." );
@@ -164,4 +144,84 @@ while( 1 )
 }
 
 
-#TODO: _processProbe
+
+# This sub will process each probe in a different process so all probes can be run in parallel
+# Parameters (within a hash):
+#   probe   :   the name of the probe
+#   config  :   the config of the probe
+#   stats   :   the statistics of the probe
+sub _processProbe
+{
+    my $params = shift;
+
+    my $probe   = $params->{ 'probe' };
+    # We make a deep copy of the config because we will remove elements later on
+    my $config  = $params->{ 'config' };
+    my $stats   = $params->{ 'stats' };
+
+    vmon::common::print( "Processing probe '$probe'..." );
+
+    if( not $probe or not $config or not $stats )
+    {
+        vmon::common::die( 'Missing the probe name, the config or the stats for processing the probe' );
+    }
+
+    # We first check that we actually need to run this probe
+    my $probeDelay = $config->{ 'delay' };
+
+    my $currentTime = time;
+
+    # If the delay is still not elapsed, we do not process this probe
+    if( ( $currentTime - $stats->{ 'lastRun' } ) < $probeDelay )
+    {
+        vmon::common::print( "The delay for the probe '$probe' is not yet elapsed, skipping this probe..." );
+        return;
+    }
+
+    # This probe is ready to be run, we fork to run it
+    my $pid = vmon::common::forkAndRedirectFilehandles( { 'stdout' => "$PROBES_LOG_FOLDER/$probe.log" } );
+
+    if( not defined $pid )
+    {
+        vmon::common::print( "Can't fork for processing probe '$probe', see vmon logs for details" );
+        return;
+    }
+    elsif( $pid != 0 )
+    {
+        # If we are the father, we have nothing else to do, we can return to process the next probe
+        vmon::common::print( "Probe '$probe' forked and being processed, processing the next one..." );
+        return;
+    }
+
+    # We are the child and we have to process the probe
+
+    # We build the data we will send in probe's STDIN
+    my @probeStdin = ( );
+
+    foreach my $configKey( keys( %{ $config } ) )
+    {
+        push( @probeStdin, "$configKey=$config->{ $configKey }" );
+    }
+
+    vmon::common::print( "Running probe '$PROBES_FOLDER/$probe'..." );
+
+    my $result = vmon::common::execute( { 'command' => "$PROBES_FOLDER/$probe", 'stdin' => \@probeStdin, 'timeout' => $config->{ 'timeout' } } );
+
+    my $status = $result->{ 'status' };
+    my $message = $result->{ 'message' };
+
+    # TODO: if timeout => oco 5 ; if died => oco 5?
+    # and remove this peut-être : $status ne 'ok' and vmon::common::die( $message );
+
+
+
+
+
+
+
+
+    vmon::common::print( "Probe '$probe' processed" );
+
+    return;
+}
+

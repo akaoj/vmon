@@ -6,16 +6,29 @@ use warnings;
 use POSIX;
 
 
-# This will print a message
+
+# This will print a message to STDOUT (or STDERR if STDOUT is not open)
 sub print
 {
     my $message = shift;
     my $date    = _getDate( );
 
-    print STDOUT "$date $message\n";
+    if( tell( STDOUT ) != -1 )
+    {
+        CORE::print STDOUT "$date $message\n";
+    }
+    elsif( tell( STDERR ) != -1 )
+    {
+        CORE::print STDERR "$date FALLBACK FROM STDOUT - $message\n";
+    }
+    else
+    {
+        vmon::common::die( "Can't write neither on STDOUT nor on STDERR" );
+    }
+
 }
 
-# This will print an error message and die
+# This will die with a formatted message
 sub die
 {
     my $message = shift;
@@ -29,26 +42,66 @@ sub _getDate
     return POSIX::strftime( '%Y-%m-%d %H:%M:%S -', localtime( time ) );
 }
 
-# This will check if a given config line match the specified parameter
+
+
+# This will fork the process: the child filehandles will be redirected to the given logs
 # Parameters (within a hash):
-#   configLine  :   the line to analyze
-#   parameter   :   the parameter to match
+#   stdout  :   the log file on where to redirect STDOUT
+#   stderr  :   OPTIONAL - the log file on where to redirect STDERR (if not set, will be the same as stdout)
 # Returns:
-#   the value found (if it matches), undefined else
-sub matchConfigParameter
+#   undef if an error occured, 0 if we are the child, not 0 if we are the father
+sub forkAndRedirectFilehandles
 {
     my $params = shift;
 
-    not $params->{ 'configLine' } and return undef;
-    not $params->{ 'parameter' }  and return undef;
+    my $stdout = $params->{ 'stdout' };
+    my $stderr = $params->{ 'stderr' } || $stdout;
 
-    if( $params->{ 'configLine' } =~ m|^\s*$params->{ 'parameter' }\s*=\s*(.*?)\s*$| )
+    if( not $stdout )
     {
-        return $1;
+        vmon::common::print( 'You have to provide the file to redirect STDOUT for the fork operation' );
+        return undef;
     }
 
-    return undef;
+    my $pid = fork( );
+    if( not defined $pid )
+    {
+        vmon::common::print( "Can't fork because of: $!" );
+        return undef;
+    }
+
+    # If we are the father, we return the child process ID
+    if( $pid != 0 )
+    {
+        vmon::common::print( "Process forked with pid $pid" );
+        return $pid;
+    }
+
+    # If we are the child, we redirect all filehandles
+    close( STDIN );
+    close( STDOUT );
+    # We keep STDERR open so we can still print something if needed
+
+    # We open STDOUT to the logfile
+    if( not open( STDOUT, '>>', $stdout ) )
+    {
+        vmon::common::print( "Can't redirect STDOUT to the logfile '$stdout' because of: $!" );
+        exit( 1 );
+    }
+
+    # We now can close STDERR and reopen it to the logfile
+    close( STDERR );
+    if( not open( STDERR, '>>', $stderr ) )
+    {
+        vmon::common::print( "Can't redirect STDERR to the logfile '$stderr' because of: $!" );
+        exit( 2 );
+    }
+
+    vmon::common::print( 'Process forked' );
+    return 0;
 }
+
+
 
 # This will open the given config file, load the configuration and send back a hash with all keys => values
 # Parameters (within a hash):
@@ -113,7 +166,7 @@ sub execute
     my @stdin       = @{ $params->{ 'stdin' }       || [ ] };
     my $timeout     = $params->{ 'timeout' }        || 5;
 
-    not $command and return { 'status' => 'missing_parameter', 'message' => 'You have to provide the command to run' };
+    not $command and vmon::common::die( 'You have to provide the command to run' );
 
     chomp( @arguments );
     chomp( @stdin );
@@ -195,7 +248,7 @@ sub execute
         $@ eq "alarm_execute\n" and return { 'status' => 'timeout', 'message' => "The command '$command' timed out after $timeout seconds" };
 
         # Other problem
-        return { 'status' => 'internal_error', 'message' => "The command '$command' failed because of: $@" };
+        return { 'status' => 'died', 'message' => "The command '$command' failed because of: $@" };
     }
 
     return { 'status' => 'ok', 'message' => 'The command executed successfully', 'stdout' => \@stdout, 'stderr' => \@stderr, 'exitCode' => $exitCode };
