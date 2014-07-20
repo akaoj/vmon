@@ -7,19 +7,87 @@ use POSIX;
 
 
 
+#################################################
+#   Constants                                   #
+#################################################
+
+# Base folder
+our $VMON_FOLDER = '/etc/vmon';
+
+# Process names
+our $VMON_MANAGER   = 'vmon-manager';
+our $VMON_RESPONDER = 'vmon-responder';
+
+# Config file
+our $CONFIG_FILE = "$VMON_FOLDER/vmon.conf";
+
+# Default log directory and file
+our $VMON_LOG_FOLDER     = '/var/log';
+our $PROBES_LOG_FOLDER   = "$VMON_LOG_FOLDER/vmon";
+
+# Default port
+our $PORT = 12080;
+
+# Locks
+our $LOCKS_FOLDER           = "$VMON_FOLDER/locks";
+our $VMON_MANAGER_LOCK      = "$LOCKS_FOLDER/$VMON_MANAGER.lock";
+# Results folder
+our $RESULTS_FOLDER         = "$VMON_FOLDER/results";
+# Base probes folder
+our $PROBES_FOLDER          = "$VMON_FOLDER/probes";
+# Probes: scripts/binaries
+our $PROBES_BIN_FOLDER      = "$PROBES_FOLDER/bin";
+# Probes: configuration
+our $PROBES_CONF_FOLDER     = "$PROBES_FOLDER/config";
+# Probes: robots
+our $PROBES_ROBOTS_FOLDER   = "$PROBES_FOLDER/robots";
+
+# How long to wait before each loop on the probes (this will limit the lesser value of the delay for the probes) - set to 10 seconds
+our $VMON_RUN_LOOP_DELAY = 1;
+
+
+
+# Statuses:
+our $STATUS_OK          = 0;
+our $STATUS_INFO        = 1;
+our $STATUS_WARNING     = 2;
+our $STATUS_ALERT       = 3;
+our $STATUS_CRITICAL    = 4;
+our $STATUS_TIMEOUT     = 5;
+our $STATUS_DIED        = 6;
+our $STATUS_OUTDATED    = 7;
+our $STATUS_INVALID     = 8;
+our $STATUS_UNKNOWN     = 10;
+
+# This define the statuses that a probe can return
+our @STATUSES_AVAILABLE_PROBES = ( $STATUS_OK, $STATUS_INFO, $STATUS_WARNING, $STATUS_ALERT, $STATUS_CRITICAL );
+
+
+
+
+
+#################################################
+#   Library                                     #
+#################################################
+
 # This will print a message to STDOUT (or STDERR if STDOUT is not open)
 sub print
 {
     my $message = shift;
-    my $date    = _getDate( );
+
+    # If the message is empty, we return (can't simply check with 'not' because the message may contain a simple '0')
+    not defined $message and return;
+    $message eq '' and return;
+
+    my $date = _getDate( );
 
     if( tell( STDOUT ) != -1 )
     {
-        CORE::print STDOUT "$date $message\n";
+        CORE::print STDOUT "$date - $message\n";
     }
     elsif( tell( STDERR ) != -1 )
     {
-        CORE::print STDERR "$date FALLBACK FROM STDOUT - $message\n";
+        CORE::print STDERR "$date - FALLBACK FROM STDOUT - $message\n";
     }
     else
     {
@@ -39,28 +107,69 @@ sub die
 
 sub _getDate
 {
-    return POSIX::strftime( '%Y-%m-%d %H:%M:%S -', localtime( time ) );
+    return POSIX::strftime( '%Y-%m-%d %H:%M:%S', localtime( time ) );
 }
 
 
 
-# This will fork the process: the child filehandles will be redirected to the given logs
+# This will return the list of all probes available (the starting point is the config file; which means a probe will exists if its config file exists)
+# Returns:
+#   a reference of an array containing all the probes found
+sub getAllAvailableProbes
+{
+    not opendir( PROBES_CONFIG_FOLDER, $PROBES_CONF_FOLDER ) and vmon::common::die( "Can't open the probes config folder '$PROBES_CONF_FOLDER' because of: $!" );
+    my @configFiles = readdir( PROBES_CONFIG_FOLDER );
+    close( PROBES_CONFIG_FOLDER );
+
+    chomp( @configFiles );
+
+    my @probesFound = ( );
+
+    foreach my $probe( @configFiles )
+    {
+        $probe eq '.'  and next;
+        $probe eq '..' and next;
+
+        $probe !~ m|^(.*?)\.conf$| and next;
+
+        # If the file is a valid config file, we add the probe to the list
+        push( @probesFound, $1 );
+    }
+
+    return \@probesFound;
+}
+
+
+
+# This will daemonize the process: it will be forked, the child filehandles will be redirected to the given logs and a lockfile will be created
+# Note that if the lockfile already exists and the process is still running, this sub will return undef
 # Parameters (within a hash):
-#   stdout  :   the log file on where to redirect STDOUT
-#   stderr  :   OPTIONAL - the log file on where to redirect STDERR (if not set, will be the same as stdout)
+#   name    :   the daemon name (to set the lockfile and logs names)
 # Returns:
 #   undef if an error occured, 0 if we are the child, not 0 if we are the father
-sub forkAndRedirectFilehandles
+sub daemonize
 {
     my $params = shift;
 
-    my $stdout = $params->{ 'stdout' };
-    my $stderr = $params->{ 'stderr' } || $stdout;
+    my $name = $params->{ 'name' };
 
-    if( not $stdout )
+    if( not $name )
     {
-        vmon::common::print( 'You have to provide the file to redirect STDOUT for the fork operation' );
+        vmon::common::print( 'You have to provide the name of the daemon for the daemonize operation' );
         return undef;
+    }
+
+    # This will hold the path to the log file
+    my $logFile = '';
+
+    # If the process is the manager or the responder, we set the logfiles in the root of the log directory, else we put them in the vmon folder in the log directory
+    if( grep{ $name eq $_ } ( $VMON_MANAGER, $VMON_RESPONDER ) )
+    {
+        $logFile = "$VMON_LOG_FOLDER/$name.log";
+    }
+    else
+    {
+        $logFile = "$PROBES_LOG_FOLDER/$name.log";
     }
 
     my $pid = fork( );
@@ -77,23 +186,23 @@ sub forkAndRedirectFilehandles
         return $pid;
     }
 
-    # If we are the child, we redirect all filehandles
-    close( STDIN );
-    close( STDOUT );
+    # If we are the child, we redirect all OUT filehandles
+
     # We keep STDERR open so we can still print something if needed
+    close( STDOUT );
 
     # We open STDOUT to the logfile
-    if( not open( STDOUT, '>>', $stdout ) )
+    if( not open( STDOUT, '>>', $logFile ) )
     {
-        vmon::common::print( "Can't redirect STDOUT to the logfile '$stdout' because of: $!" );
+        vmon::common::print( "Can't redirect STDOUT to the logfile '$logFile' because of: $!" );
         exit( 1 );
     }
 
     # We now can close STDERR and reopen it to the logfile
     close( STDERR );
-    if( not open( STDERR, '>>', $stderr ) )
+    if( not open( STDERR, '>>', $logFile ) )
     {
-        vmon::common::print( "Can't redirect STDERR to the logfile '$stderr' because of: $!" );
+        vmon::common::print( "Can't redirect STDERR to the logfile '$logFile' because of: $!" );
         exit( 2 );
     }
 
@@ -103,22 +212,22 @@ sub forkAndRedirectFilehandles
 
 
 
-# This will open the given config file, load the configuration and send back a hash with all keys => values
+# This will open the config file for the given probe, load the configuration and send back a hash with all keys => values
 # Parameters (within a hash):
-#   file    :   the file to load
+#   probe   :   the name of the probe
 # Returns:
 #   a hash reference containing all keys => values found
 sub loadConfigFile
 {
     my $params = shift;
 
-    my $file = $params->{ 'file' };
+    my $probe = "$PROBES_CONF_FOLDER/$params->{ 'probe' }.conf";
 
-    not -f $file and vmon::common::die( "The config file '$file' does not exist" );
+    not -f $probe and vmon::common::die( "The config file '$probe' does not exist" );
 
-    not open( FILE, '<', $file ) and vmon::common::die( "Can't read the config file '$file' because of: $!" );
-    my @fileContent = <FILE>;
-    close( FILE );
+    not open( CONFIG_FILE, '<', $probe ) and vmon::common::die( "Can't read the config file '$probe' because of: $!" );
+    my @fileContent = <CONFIG_FILE>;
+    close( CONFIG_FILE );
 
     chomp( @fileContent );
 
@@ -130,7 +239,7 @@ sub loadConfigFile
         $line =~ m|^\s*$|   and next;
         $line =~ m|^#|      and next;
 
-        $line !~ m|^\s*([a-zA-Z0-9._-])+\s*=\s*(.*?)\s*$| and next;
+        $line !~ m|^\s*([a-zA-Z0-9._-]+)\s*=\s*(.*?)\s*$| and next;
 
         # We retrieve the key and the value for the current parameter
         my $key     = $1;
@@ -141,6 +250,8 @@ sub loadConfigFile
 
         # We finally add the couple to the hash
         $config->{ $key } = $value;
+
+        vmon::common::print( "$key => $value" );
     }
 
     return $config;
@@ -177,26 +288,32 @@ sub execute
     my @stdout = ( );
     my @stderr = ( );
 
+    not -x $command and return { 'status' => 'error', 'message' => "The command '$command' is not executable, can't run it", 'stdout' => \@stdout, 'stderr' => \@stderr };
+
     my $exitCode = -1;
 
     # We run the command but we control the timeout
     eval
     {
-        local $SIG{ 'ALRM' } = sub{ CORE::die( "alarm_execute\n" ); };
+        local $SIG{ 'ALRM' } = sub { CORE::die( "alarm\n" ); };
         alarm $timeout;
 
         require IPC::Open3;
         require IO::Select;
+        require Symbol;
 
         my( $in, $out, $err );
         $err = Symbol::gensym( );
 
         my $pid = IPC::Open3::open3( $in, $out, $err, @commandsList );
 
-        # We feed the stdin
-        foreach my $line( @stdin )
+        # We feed the stdin (only if we can)
+        if( -t $in )
         {
-            print $in "$line\n";
+            foreach my $line( @stdin )
+            {
+                print $in "$line\n";
+            }
         }
 
         close( $in );
@@ -240,18 +357,25 @@ sub execute
 
         $exitCode = $? >> 8;
 
+        waitpid( $pid, 0 );
+
         alarm 0;
     };
     if( $@ )
     {
         # Timeout
-        $@ eq "alarm_execute\n" and return { 'status' => 'timeout', 'message' => "The command '$command' timed out after $timeout seconds" };
+        $@ eq "alarm\n" and return { 'status' => 'timeout', 'message' => "The command '$command' timed out after $timeout seconds", 'stdout' => \@stdout, 'stderr' => \@stderr };
 
         # Other problem
-        return { 'status' => 'died', 'message' => "The command '$command' failed because of: $@" };
+        return { 'status' => 'died', 'message' => "The Perl wrapper around the command '$command' died because of: $@", 'stdout' => \@stdout, 'stderr' => \@stderr };
     }
 
-    return { 'status' => 'ok', 'message' => 'The command executed successfully', 'stdout' => \@stdout, 'stderr' => \@stderr, 'exitCode' => $exitCode };
+    if( $exitCode != 0 )
+    {
+        return { 'status' => 'died', 'message' => "The command '$command' died and returned the exit code: $exitCode", 'stdout' => \@stdout, 'stderr' => \@stderr, 'exitCode' => $exitCode };
+    }
+
+    return { 'status' => 'ok', 'message' => "The command '$command' executed successfully", 'stdout' => \@stdout, 'stderr' => \@stderr, 'exitCode' => $exitCode };
 }
 
 1;
