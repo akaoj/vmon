@@ -1,0 +1,28 @@
+/var/log/vmon-scheduler.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+    nomissingok
+}
+
+/var/log/vmon-responder.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+    nomissingok
+}
+
+/var/log/vmon/* {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    notifempty
+    copytruncate
+}

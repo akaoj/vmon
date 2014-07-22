@@ -15,7 +15,7 @@ use POSIX;
 our $VMON_FOLDER = '/etc/vmon';
 
 # Process names
-our $VMON_MANAGER   = 'vmon-manager';
+our $VMON_SCHEDULER = 'vmon-scheduler';
 our $VMON_RESPONDER = 'vmon-responder';
 
 # Config file
@@ -30,7 +30,8 @@ our $PORT = 12080;
 
 # Locks
 our $LOCKS_FOLDER           = "$VMON_FOLDER/locks";
-our $VMON_MANAGER_LOCK      = "$LOCKS_FOLDER/$VMON_MANAGER.lock";
+our $VMON_SCHEDULER_LOCK    = "$LOCKS_FOLDER/$VMON_SCHEDULER.lock";
+our $VMON_RESPONDER_LOCK    = "$LOCKS_FOLDER/$VMON_RESPONDER.lock";
 # Results folder
 our $RESULTS_FOLDER         = "$VMON_FOLDER/results";
 # Base probes folder
@@ -162,8 +163,8 @@ sub daemonize
     # This will hold the path to the log file
     my $logFile = '';
 
-    # If the process is the manager or the responder, we set the logfiles in the root of the log directory, else we put them in the vmon folder in the log directory
-    if( grep{ $name eq $_ } ( $VMON_MANAGER, $VMON_RESPONDER ) )
+    # If the process is the scheduler or the responder, we set the logfiles in the root of the log directory, else we put them in the vmon folder in the log directory
+    if( grep{ $name eq $_ } ( $VMON_SCHEDULER, $VMON_RESPONDER ) )
     {
         $logFile = "$VMON_LOG_FOLDER/$name.log";
     }

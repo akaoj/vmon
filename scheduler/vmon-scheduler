@@ -3,8 +3,6 @@
 use strict;
 use warnings;
 
-use IO::Socket;
-
 use lib 'common';
 use common;
 
@@ -20,21 +18,21 @@ local $SIG{ 'TERM' } = \&_exitGracefully;
 
 sub _exitGracefully
 {
-    unlink( $vmon::common::VMON_MANAGER_LOCK );
+    unlink( $vmon::common::VMON_SCHEDULER_LOCK );
     exit( 0 );
 }
 
 
 
 # We first check if the lockfile already exists
-if( -e $vmon::common::VMON_MANAGER_LOCK )
+if( -e $vmon::common::VMON_SCHEDULER_LOCK )
 {
-    vmon::common::die( "Can't start the VMON manager because the lockfile already exists at '$vmon::common::VMON_MANAGER_LOCK'" );
+    vmon::common::die( "Can't start the VMON scheduler because the lockfile already exists at '$vmon::common::VMON_SCHEDULER_LOCK'" );
 }
 
-vmon::common::print( 'Daemonizing the manager...' );
+vmon::common::print( 'Daemonizing the scheduler...' );
 
-my $pid = vmon::common::daemonize( { 'name' => $vmon::common::VMON_MANAGER } );
+my $pid = vmon::common::daemonize( { 'name' => $vmon::common::VMON_SCHEDULER } );
 not defined $pid and vmon::common::die( "Can't daemonize, see logs for more informations" );
 
 # We stop the father
@@ -46,8 +44,8 @@ if( $pid != 0 )
 
 vmon::common::print( 'We are the child, locking the process...' );
 
-not open( LOCKFILE, '>', $vmon::common::VMON_MANAGER_LOCK ) and vmon::common::die( "Can't open the lockfile '$vmon::common::VMON_MANAGER_LOCK' because of: $!" );
-not( print LOCKFILE $$ ) and vmon::common::die( "Can't write the PID in the lockfile '$vmon::common::VMON_MANAGER_LOCK' because of: $!" );
+not open( LOCKFILE, '>', $vmon::common::VMON_SCHEDULER_LOCK ) and vmon::common::die( "Can't open the lockfile '$vmon::common::VMON_SCHEDULER_LOCK' because of: $!" );
+not( print LOCKFILE $$ ) and vmon::common::die( "Can't write the PID in the lockfile '$vmon::common::VMON_SCHEDULER_LOCK' because of: $!" );
 close( LOCKFILE );
 
 

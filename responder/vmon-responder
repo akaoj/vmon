@@ -1,0 +1,80 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use IO::Socket;
+
+use lib 'common';
+use common;
+
+# Autoflush the output
+$| = 1;
+
+# Needed here so we can close it on exit
+my $socket = undef;
+
+# Remove the lock file on exit
+local $SIG{ 'INT' }  = \&_exitGracefully;
+local $SIG{ 'TERM' } = \&_exitGracefully;
+
+sub _exitGracefully
+{
+    unlink( $vmon::common::VMON_RESPONDER_LOCK );
+    defined $socket and close( $socket );
+
+    exit( 0 );
+}
+
+
+
+# We first check if the lockfile already exists
+if( -e $vmon::common::VMON_RESPONDER_LOCK )
+{
+    vmon::common::die( "Can't start the VMON responder because the lockfile already exists at '$vmon::common::VMON_RESPONDER_LOCK'" );
+}
+
+vmon::common::print( 'Daemonizing the responder...' );
+
+my $pid = vmon::common::daemonize( { 'name' => $vmon::common::VMON_RESPONDER } );
+not defined $pid and vmon::common::die( "Can't daemonize, see logs for more informations" );
+
+# We stop the father
+if( $pid != 0 )
+{
+    vmon::common::print( "Child forked with pid '$pid', ending father..." );
+    exit( 0 );
+}
+
+vmon::common::print( 'We are the child, locking the process...' );
+
+not open( LOCKFILE, '>', $vmon::common::VMON_RESPONDER_LOCK ) and vmon::common::die( "Can't open the lockfile '$vmon::common::VMON_RESPONDER_LOCK' because of: $!" );
+not( print LOCKFILE $$ ) and vmon::common::die( "Can't write the PID in the lockfile '$vmon::common::VMON_RESPONDER_LOCK' because of: $!" );
+close( LOCKFILE );
+
+
+
+vmon::common::print( 'Lockfile taken, binding to the network interface...' );
+
+# Now STDOUT and STDERR are opened to the logfile, we can start working
+
+# We first create the socket
+$socket = IO::Socket::INET->new( 'LocalAddr' => 'localhost', 'LocalPort' => 8079, 'Proto' => 'tcp', 'Listen' => 5 );
+not $socket and vmon::common::die( "Can't create the socket because of: $!" );
+
+
+
+my $running = 1;
+
+while( $running )
+{
+    my $connection = $socket->accept( );
+
+    # We send back 'ok'
+    print $connection "Hello dude\n";
+
+    shutdown( $connection, 2 );
+    close( $connection );
+}
+
+close( $socket );
