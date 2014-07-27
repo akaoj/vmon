@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use IO::Socket;
+use JSON;
 
 use lib 'common';
 use common;
@@ -15,8 +16,9 @@ $| = 1;
 my $socket = undef;
 
 # Remove the lock file on exit
-local $SIG{ 'INT' }  = \&_exitGracefully;
-local $SIG{ 'TERM' } = \&_exitGracefully;
+local $SIG{ 'INT' }     = \&_exitGracefully;
+local $SIG{ 'TERM' }    = \&_exitGracefully;
+local $SIG{ '__DIE__' } = \&_exitGracefully;
 
 sub _exitGracefully
 {
@@ -59,10 +61,27 @@ vmon::common::print( 'Lockfile taken, binding to the network interface...' );
 # Now STDOUT and STDERR are opened to the logfile, we can start working
 
 # We first create the socket
-$socket = IO::Socket::INET->new( 'LocalAddr' => 'localhost', 'LocalPort' => 8079, 'Proto' => 'tcp', 'Listen' => 5 );
+$socket = IO::Socket::INET->new( 'LocalAddr' => 'localhost', 'LocalPort' => $vmon::common::VMON_RESPONDER_PORT, 'Proto' => 'tcp', 'Listen' => 5 );
 not $socket and vmon::common::die( "Can't create the socket because of: $!" );
 
 
+
+# This hash will hold all the config for each probe
+my $probesConfiguration = { };
+
+foreach my $probe( @{ vmon::common::getAllAvailableProbes( ) } )
+{
+    vmon::common::print( "Loading '$probe' config..." );
+
+    my $confHash = vmon::common::loadConfigFile( { 'probe' => $probe } );
+
+    if( not $confHash->{ 'delay' } or ( $confHash->{ 'delay' } !~ m|^[0-9]+$| ) )
+    {
+        vmon::common::die( "The probe '$probe' config does not supply the delay parameter" );
+    }
+
+    $probesConfiguration->{ $probe }->{ 'delay' } = $confHash->{ 'delay' };
+}
 
 my $running = 1;
 
@@ -70,11 +89,89 @@ while( $running )
 {
     my $connection = $socket->accept( );
 
-    # We send back 'ok'
-    print $connection "Hello dude\n";
+    # This will store the result for evey probe
+    my $probeResult = { };
+
+    # We crawl all result files and we send back the result
+    # The output will be done in the "continue" block
+    foreach my $probe( keys( %{ $probesConfiguration } ) )
+    {
+        $probeResult->{ 'probe' } = $probe;
+
+        my $fullPathResult = "$vmon::common::RESULTS_FOLDER/$probe";
+
+        # We check if the result file exists and it it is outdated
+        if( not -f $fullPathResult )
+        {
+            $probeResult->{ 'status' } = $vmon::common::STATUS_MISSING;
+            next;
+        }
+
+        my @stats = stat( $fullPathResult );
+        if( not @stats )
+        {
+            $probeResult->{ 'status' } = $vmon::common::STATUS_UNKNOWN;
+            $probeResult->{ 'details' } = "Can't stat the result file";
+            next;
+        }
+
+        my $lastModificationTime = $stats[ 9 ];
+
+        if( time >= ( $lastModificationTime + ( 3 * $probesConfiguration->{ $probe }->{ 'delay' } ) ) )
+        {
+            $probeResult->{ 'status' } = $vmon::common::STATUS_OUTDATED;
+            $probeResult->{ 'details' } = time - $lastModificationTime;
+            next;
+        }
+
+        # If the result file seems good, we retrieve its content
+        if( not open( RESULT, '<', $fullPathResult ) )
+        {
+            $probeResult->{ 'status' } = $vmon::common::STATUS_UNKNOWN;
+            $probeResult->{ 'details' } = "Can't open the result file for reading because of: $!";
+            next;
+        }
+        my @resultContent = <RESULT>;
+        close( RESULT );
+
+        my $probeStatus = shift( @resultContent );
+        my $probeDetails = join( '', @resultContent );
+
+        chomp( $probeDetails );
+
+        chomp( $probeStatus );
+
+        if( not grep{ $probeStatus eq $_ } @vmon::common::STATUSES_AVAILABLE )
+        {
+            $probeResult->{ 'status' } = $vmon::common::STATUS_INVALID;
+            $probeResult->{ 'details' } = $probeStatus;
+            next;
+        }
+
+        $probeResult->{ 'status' } = $probeStatus;
+        $probeResult->{ 'details' } = $probeDetails;
+    }
+    continue
+    {
+        # We then JSONize the hash and print it to the caller
+        my $probeJson = '';
+
+        eval{ $probeJson = JSON::encode_json( $probeResult ); };
+        $@ and vmon::common::die( "Can't encode to JSON because of: $@" );
+
+        print $connection "$probeJson\n";
+    }
 
     shutdown( $connection, 2 );
     close( $connection );
 }
 
 close( $socket );
+
+vmon::common::print( 'Ending responder...' );
+exit( 0 );
+
+#################################################
+#   All done                                    #
+#################################################
+

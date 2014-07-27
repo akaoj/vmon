@@ -13,8 +13,9 @@ $| = 1;
 local $SIG{ 'CHLD' } = 'IGNORE';
 
 # Remove the lock file on exit
-local $SIG{ 'INT' }  = \&_exitGracefully;
-local $SIG{ 'TERM' } = \&_exitGracefully;
+local $SIG{ 'INT' }     = \&_exitGracefully;
+local $SIG{ 'TERM' }    = \&_exitGracefully;
+local $SIG{ '__DIE__' } = \&_exitGracefully;
 
 sub _exitGracefully
 {
@@ -63,18 +64,16 @@ foreach my $probe( @{ vmon::common::getAllAvailableProbes( ) } )
 {
     vmon::common::print( "Loading '$probe' config..." );
 
-    my $confHash = vmon::common::loadConfigFile( { 'probe' => "$probe" } );
+    my $confHash = vmon::common::loadConfigFile( { 'probe' => $probe } );
 
     # We check that the minimal parameters are set
     if( not $confHash->{ 'timeout' } or ( $confHash->{ 'timeout' } !~ m|^[0-9]+$| ) )
     {
-        vmon::common::print( "The probe '$probe' config does not supply the timeout parameter, skipping it..." );
-        next;
+        vmon::common::die( "The probe '$probe' config does not supply the timeout parameter" );
     }
     elsif( not $confHash->{ 'delay' } or ( $confHash->{ 'delay' } !~ m|^[0-9]+$| ) )
     {
-        vmon::common::print( "The probe '$probe' config does not supply the delay parameter, skipping it..." );
-        next;
+        vmon::common::die( "The probe '$probe' config does not supply the delay parameter" );
     }
 
     $probesConfiguration->{ $probe } = $confHash;
@@ -99,7 +98,9 @@ local $SIG{ 'CHLD' } = 'IGNORE';
 # This hash will hold all the information about the probes (last run, ...)
 my $probesStats = { };
 
-while( 1 )
+my $running = 1;
+
+while( $running )
 {
     foreach my $probe( keys( %{ $probesConfiguration } ) )
     {
@@ -137,6 +138,9 @@ while( 1 )
     # Now all probes are being processed, we sleep
     sleep( $vmon::common::VMON_RUN_LOOP_DELAY );
 }
+
+vmon::common::print( 'Ending scheduler...' );
+exit( 0 );
 
 #################################################
 #   All done                                    #
@@ -200,39 +204,38 @@ sub _processProbe
     my $executeStatus   = $result->{ 'status' };
     my $executeMessage  = $result->{ 'message' };
     my $status  = shift( @{ $result->{ 'stdout' } } );
-    my $stdout  = join( "\n", @{ $result->{ 'stdout' } } );
-    my $stderr  = join( "\n", @{ $result->{ 'stderr' } } );
+    my @stdout  = @{ $result->{ 'stdout' } || [ ] };
+    my @stderr  = @{ $result->{ 'stderr' } || [ ] };
 
     chomp( $executeStatus );
     chomp( $executeMessage );
-    chomp( $status );
-    chomp( $stdout );
-    chomp( $stderr );
 
-    my $probeStatus     = 10;
-    my $probeDetails    = $stdout;
+    not defined $status and $status = $vmon::common::STATUS_UNKNOWN;
+
+    my $probeStatus     = $vmon::common::STATUS_UNKNOWN;
+    my @probeDetails    = @stdout;
 
     if( $executeStatus eq 'timeout' )
     {
-        $probeStatus = 5;
+        $probeStatus = $vmon::common::STATUS_TIMEOUT;
     }
     elsif( $executeStatus eq 'died' )
     {
-        $probeStatus = 6;
+        $probeStatus = $vmon::common::STATUS_DIED;
     }
     elsif( $executeStatus eq 'error' )
     {
-        $probeStatus = 10;
+        $probeStatus = $vmon::common::STATUS_UNKNOWN;
     }
     elsif( $executeStatus eq 'ok' )
     {
         if( not grep{ $status eq $_ } @vmon::common::STATUSES_AVAILABLE_PROBES )
         {
-            vmon::common::print( 'The probe did not return a valid status, would you mind RTFM?!' );
+            vmon::common::print( "The probe did not return a valid status ($status), would you mind RTFM?!" );
 
-            $probeStatus = 8;
+            $probeStatus = $vmon::common::STATUS_INVALID;
             # We add back the first line (it's not a status, so it can be some details)
-            $probeDetails = "$status\n$probeDetails";
+            unshift( @probeDetails, $status );
         }
         else
         {
@@ -246,12 +249,15 @@ sub _processProbe
 
     # We now write in the result file the status and the STDOUT of the probe
     not open( PROBE_RESULT, '>', "$vmon::common::RESULTS_FOLDER/$probe" ) and vmon::common::die( "Can't open the result file because of: $!" );
-    print PROBE_RESULT "$probeStatus\n$probeDetails";
+    print PROBE_RESULT "$probeStatus\n" . join( "\n", @probeDetails );
     close( PROBE_RESULT );
 
     # And we print the STDERR in the logfile
     vmon::common::print( $executeMessage );
-    vmon::common::print( $stderr );
+    foreach my $err( @stderr )
+    {
+        vmon::common::print( $err );
+    }
 
     vmon::common::print( "Probe '$probe' processed" );
 

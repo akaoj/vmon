@@ -26,7 +26,7 @@ our $VMON_LOG_FOLDER     = '/var/log';
 our $PROBES_LOG_FOLDER   = "$VMON_LOG_FOLDER/vmon";
 
 # Default port
-our $PORT = 12080;
+our $VMON_RESPONDER_PORT = 12080;
 
 # Locks
 our $LOCKS_FOLDER           = "$VMON_FOLDER/locks";
@@ -56,12 +56,15 @@ our $STATUS_ALERT       = 3;
 our $STATUS_CRITICAL    = 4;
 our $STATUS_TIMEOUT     = 5;
 our $STATUS_DIED        = 6;
-our $STATUS_OUTDATED    = 7;
-our $STATUS_INVALID     = 8;
+our $STATUS_INVALID     = 7;
+our $STATUS_OUTDATED    = 8;
+our $STATUS_MISSING     = 9;
 our $STATUS_UNKNOWN     = 10;
 
 # This define the statuses that a probe can return
 our @STATUSES_AVAILABLE_PROBES = ( $STATUS_OK, $STATUS_INFO, $STATUS_WARNING, $STATUS_ALERT, $STATUS_CRITICAL );
+# This define all the statuses available
+our @STATUSES_AVAILABLE = ( $STATUS_OK, $STATUS_INFO, $STATUS_WARNING, $STATUS_ALERT, $STATUS_CRITICAL, $STATUS_TIMEOUT, $STATUS_DIED, $STATUS_INVALID, $STATUS_OUTDATED, $STATUS_MISSING, $STATUS_UNKNOWN );
 
 
 
@@ -281,7 +284,6 @@ sub execute
     not $command and vmon::common::die( 'You have to provide the command to run' );
 
     chomp( @arguments );
-    chomp( @stdin );
 
     # We prepare the command
     my @commandsList = ( $command, @arguments );
@@ -313,7 +315,7 @@ sub execute
         {
             foreach my $line( @stdin )
             {
-                print $in "$line\n";
+                print $in $line;
             }
         }
 
@@ -356,9 +358,9 @@ sub execute
         close( $out );
         close( $err );
 
-        $exitCode = $? >> 8;
-
         waitpid( $pid, 0 );
+
+        $exitCode = $? >> 8;
 
         alarm 0;
     };
